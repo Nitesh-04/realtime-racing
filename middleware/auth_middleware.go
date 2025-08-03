@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"slices"
 	"os"
 	"strings"
 
@@ -11,17 +10,23 @@ import (
 
 
 var unprotectedRoutes = []string{
+	"/api/health",
 	"/api/register",
 	"/api/login",
 }
 
-func IsUnprotectedRoute(path string) bool {
-	return slices.Contains(unprotectedRoutes, path)
+func IsUnprotectedRoute(c *fiber.Ctx) bool {
+	for _, route := range unprotectedRoutes {
+		if c.Path() == route {
+			return true
+		}
+	}
+	return false
 }
 
 func CheckAuth() fiber.Handler {
 	return func (c *fiber.Ctx) error {
-		if IsUnprotectedRoute(c.Path()) {
+		if IsUnprotectedRoute(c) {
 			return c.Next()
 		}
 

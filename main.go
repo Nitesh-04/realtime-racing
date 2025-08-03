@@ -22,13 +22,6 @@ func main() {
 	startServer(app)
 }
 
-func setupRoutes(app *fiber.App) {
-	api := app.Group("/api")
-	api.Use(middleware.CheckAuth())
-
-	routes.AuthRouter(api)
-}
-
 func setupMiddlewares(app *fiber.App) {
 
 	// app.Use(cors.New(cors.Config{
@@ -37,6 +30,13 @@ func setupMiddlewares(app *fiber.App) {
 	// 	AllowHeaders:     "Origin, Content-Type, Accept, Authorization, Upgrade, Connection",
 	// 	AllowCredentials: true,
 	// 	}))
+}
+
+func setupRoutes(app *fiber.App) {
+	api := app.Group("/api")
+	api.Use(middleware.CheckAuth())
+
+	routes.MainRouter(api)
 }
 
 func startServer(app *fiber.App) {

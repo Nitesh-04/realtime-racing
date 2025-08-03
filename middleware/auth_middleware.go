@@ -15,6 +15,8 @@ var unprotectedRoutes = []string{
 	"/api/login",
 }
 
+// skip unprotected routes
+
 func IsUnprotectedRoute(c *fiber.Ctx) bool {
 	for _, route := range unprotectedRoutes {
 		if c.Path() == route {
@@ -38,7 +40,7 @@ func CheckAuth() fiber.Handler {
 			})
 		}
 
-		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
+		tokenString := strings.TrimPrefix(authHeader, "Bearer ") // Extract the token string from the header
 
 		if tokenString == "" {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
@@ -51,7 +53,7 @@ func CheckAuth() fiber.Handler {
 				return nil, fiber.NewError(fiber.StatusUnauthorized, "Invalid token signing method")
 			}
 
-			return []byte(os.Getenv("JWT_SECRET_KEY")), nil
+			return []byte(os.Getenv("JWT_SECRET_KEY")), nil // Use the secret key from environment variables
 		})
 
 		if err != nil {
@@ -68,7 +70,7 @@ func CheckAuth() fiber.Handler {
 				})
 			}
 
-			c.Locals("userId", userID)
+			c.Locals("userId", userID) // Store user ID in context for later use
 			return c.Next()
 		}
 

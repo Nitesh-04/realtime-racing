@@ -13,6 +13,8 @@ import (
 	"gorm.io/gorm"
 )
 
+// generateJWT creates a JWT token for the user
+
 func generateJWT(userID string) (string,error) {
 	
 	secretKey := os.Getenv("JWT_SECRET_KEY")
@@ -37,6 +39,8 @@ func generateJWT(userID string) (string,error) {
 	return signedToken, nil
 }
 
+// validateRegistrationInput checks if the registration input is valid
+
 func validateRegistrationInput(name, email, username, password string) (string, bool) {
 	if name == "" || email == "" || username == "" || password == "" {
 		return "name, email, username and password are required", false
@@ -46,6 +50,8 @@ func validateRegistrationInput(name, email, username, password string) (string, 
 	}
 	return "", true
 }
+
+// checkUniqueUsername checks if the username is unique in the database
 
 func checkUniqueUsername(username string, db *gorm.DB) bool {
 	var user models.User
@@ -152,7 +158,7 @@ func LoginUser(c *fiber.Ctx) error {
 		})
 	}
 
-	token, err := generateJWT(user.ID.String())
+	token, err := generateJWT(user.ID.String()) // Generate JWT token for the user
 
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{

@@ -19,12 +19,22 @@ type Room struct {
 
 	Prompt string `gorm:"not null" json:"prompt"`
 
+	RoomStatus RoomStatus `gorm:"not null;default:'waiting'" json:"status"`
+
 	WinnerID *uuid.UUID `gorm:"type:uuid" json:"winner_id"`
 	Winner User `gorm:"foreignKey:WinnerID;constraint:OnDelete:SET NULL"`
 
 	CreatedAt time.Time `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt time.Time `gorm:"autoUpdateTime" json:"updated_at"`
 }
+
+type RoomStatus string
+const (
+	RoomStatusWaiting    RoomStatus = "waiting"
+	RoomStatusReady      RoomStatus = "ready"
+	RoomStatusInProgress RoomStatus = "in_progress"
+	RoomStatusCompleted  RoomStatus = "completed"
+)
 
 func (r *Room) BeforeCreate(tx *gorm.DB) (err error) {
 	r.ID = uuid.New()

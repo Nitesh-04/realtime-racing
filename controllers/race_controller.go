@@ -33,18 +33,25 @@ func CreateRoom(c *fiber.Ctx) error {
 		})
 	}
 
-	roomCode := constants.GenerateRoomCode()
+	var roomCode string
 
-	// Ensure the room code is unique
+	// Generate a unique room code
 
 	for {
+		roomCode = constants.GenerateRoomCode()
+
 		var existingRoom models.Room
-		result := db.Where("room_code = ? AND room_status != ?", roomCode, models.RoomStatusCompleted).First(&existingRoom)
+		result := db.Where("room_code = ? AND room_status IN ?", roomCode, []string{
+			string(models.RoomStatusWaiting),
+			string(models.RoomStatusReady),
+			string(models.RoomStatusInProgress),
+		}).First(&existingRoom)
+
 		if result.RowsAffected == 0 {
 			break
 		}
-		roomCode = constants.GenerateRoomCode()
 	}
+
 
 	// parse the user ID to uuid.UUID
 

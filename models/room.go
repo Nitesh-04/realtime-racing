@@ -9,7 +9,7 @@ import (
 type Room struct {
 	ID uuid.UUID `gorm:"type:uuid;primaryKey;" json:"id"`
 
-	RoomCode string `gorm:"uniqueIndex;not null" json:"room_code"`
+	RoomCode string `gorm:"not null" json:"room_code"`
 
 	CreatorID uuid.UUID `gorm:"type:uuid;not null" json:"creator_id"`
 	Creator User `gorm:"foreignKey:CreatorID;constraint:OnDelete:CASCADE"`

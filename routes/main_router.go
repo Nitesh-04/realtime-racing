@@ -9,4 +9,6 @@ func MainRouter(api fiber.Router) {
 
 	api.Get("/health", controllers.HealthCheck)
 	AuthRouter(api)
+	RaceRouter(api)
+	UserRouter(api)
 }

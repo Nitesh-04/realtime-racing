@@ -18,6 +18,8 @@ type Results struct {
 	OpponentID uuid.UUID `gorm:"type:uuid;not null" json:"opponent_id"`
 	Opponent User `gorm:"foreignKey:OpponentID;constraint:OnDelete:CASCADE"`
 
+	Won  bool `json:"won"`
+
 	WPM int `gorm:"not null" json:"wpm"`
 	Accuracy float64 `gorm:"not null" json:"accuracy"`
 	Error float64 `gorm:"not null" json:"error"`

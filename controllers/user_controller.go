@@ -1,6 +1,8 @@
 package controllers
 
 import (
+	"fmt"
+
 	"github.com/Nitesh-04/realtime-racing/config"
 	"github.com/Nitesh-04/realtime-racing/models"
 	"github.com/gofiber/fiber/v2"
@@ -28,16 +30,22 @@ func GetUserResults(c *fiber.Ctx) error {
 		})
 	}
 
+	limit := 20
+	page := 1
+	if p := c.Query("page"); p != "" {
+		fmt.Sscanf(p, "%d", &page)
+	}
+	offset := (page - 1) * limit
+
 	var results []models.Results
 	
 	err = db.
 		Preload("User").
 		Preload("Opponent").
-		Preload("Room").
-		Preload("Room.Creator").
-		Preload("Room.Opponent").
-		Preload("Room.Winner").
 		Where("user_id = ?", userUUID).
+		Order("created_at DESC").
+		Limit(limit).
+		Offset(offset).
 		Find(&results).Error
 
 	if err != nil {
@@ -47,8 +55,36 @@ func GetUserResults(c *fiber.Ctx) error {
 		})
 	}
 
+	type resultResponse struct {
+		ID         uuid.UUID `json:"id"`
+		UserID     uuid.UUID `json:"user_id"`
+		User 	  models.User `json:"user"`
+		OpponentID *uuid.UUID `json:"opponent_id"`
+		Opponent   models.User `json:"opponent"`
+		Won        bool      `json:"won"`
+		WPM        int   `json:"wpm"`
+		Accuracy   float64   `json:"accuracy"`
+		Error      float64   `json:"error"`
+	}
+
+	var response []resultResponse
+	for _, result := range results {
+		resp := resultResponse{
+			ID:         result.ID,
+			UserID:     result.UserID,
+			User:       result.User,
+			OpponentID: &result.OpponentID,
+			Opponent:   result.Opponent,
+			Won:        result.Won,
+			WPM:        result.WPM,
+			Accuracy:   result.Accuracy,
+			Error:      result.Error,
+		}
+		response = append(response, resp)
+	}
+
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{
-		"results": results,
+		"results": response,
 	})
 }
 

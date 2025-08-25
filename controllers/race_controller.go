@@ -4,6 +4,7 @@ import (
 	"github.com/Nitesh-04/realtime-racing/config"
 	"github.com/Nitesh-04/realtime-racing/constants"
 	"github.com/Nitesh-04/realtime-racing/models"
+	"github.com/Nitesh-04/realtime-racing/websockets"
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -28,7 +29,7 @@ func CreateRoom(c *fiber.Ctx) error {
 
 	if userId == "" {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-			"error": "Unauthorized",
+			"error":   "Unauthorized",
 			"details": "User ID is required to create a room",
 		})
 	}
@@ -41,17 +42,11 @@ func CreateRoom(c *fiber.Ctx) error {
 		roomCode = constants.GenerateRoomCode()
 
 		var existingRoom models.Room
-		result := db.Where("room_code = ? AND room_status IN ?", roomCode, []string{
-			string(models.RoomStatusWaiting),
-			string(models.RoomStatusReady),
-			string(models.RoomStatusInProgress),
-		}).First(&existingRoom)
-
+		result := db.Where("room_code = ?", roomCode).First(&existingRoom)
 		if result.RowsAffected == 0 {
 			break
 		}
 	}
-
 
 	// parse the user ID to uuid.UUID
 
@@ -59,7 +54,7 @@ func CreateRoom(c *fiber.Ctx) error {
 
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Invalid user ID",
+			"error":   "Invalid user ID",
 			"details": err.Error(),
 		})
 	}
@@ -79,7 +74,7 @@ func CreateRoom(c *fiber.Ctx) error {
 
 	if err := db.Create(&room).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to create room",
+			"error":   "Failed to create room",
 			"details": err.Error(),
 		})
 	}
@@ -89,10 +84,13 @@ func CreateRoom(c *fiber.Ctx) error {
 
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to load room",
+			"error":   "Failed to load room",
 			"details": err.Error(),
 		})
 	}
+
+	// Broadcast player list update for the room (only creator connected so far)
+	websockets.Hub.BroadcastPlayerList(roomCode)
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
 		"message": "Room created successfully",
@@ -107,7 +105,7 @@ func JoinRoom(c *fiber.Ctx) error {
 
 	if userId == "" {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-			"error": "Unauthorized",
+			"error":   "Unauthorized",
 			"details": "User ID is required to join a room",
 		})
 	}
@@ -116,22 +114,21 @@ func JoinRoom(c *fiber.Ctx) error {
 
 	if roomCode == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Room code is required",
+			"error":   "Room code is required",
 			"details": "Please provide a valid room code to join",
 		})
 	}
 
 	var room models.Room
 
-	if err := db.Where("room_code = ? AND room_status = ?", roomCode, models.RoomStatusWaiting).First(&room).Error; err != nil {
+	if err := db.Where("room_code = ?", roomCode).First(&room).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
-			"error": "Room not found or already in progress",
+			"error":   "Room not found or already in progress",
 			"details": "The room may not exist or is already occupied by another player",
 		})
 	}
 
 	opponentUUID, err := uuid.Parse(userId)
-
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"message": "Invalid user ID",
@@ -146,19 +143,22 @@ func JoinRoom(c *fiber.Ctx) error {
 
 	if err := db.Save(&room).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to join room",
+			"error":  "Failed to join room",
 			"details": err.Error(),
 		})
 	}
+
+	websockets.Hub.BroadcastPlayerList(roomCode)
 
 	room, err = LoadFullRoom(db, room.RoomCode)
 
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to load room",
+			"error":   "Failed to load room",
 			"details": err.Error(),
 		})
 	}
+
 
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{
 		"message": "Joined room successfully",
@@ -173,7 +173,7 @@ func LeaveRoom(c *fiber.Ctx) error {
 
 	if userId == "" {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-			"error": "Unauthorized",
+			"error":   "Unauthorized",
 			"details": "User ID is required to leave a room",
 		})
 	}
@@ -182,7 +182,7 @@ func LeaveRoom(c *fiber.Ctx) error {
 
 	if roomCode == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Room code is required",
+			"error":   "Room code is required",
 			"details": "Please provide a valid room code to leave",
 		})
 	}
@@ -191,7 +191,7 @@ func LeaveRoom(c *fiber.Ctx) error {
 
 	if err := db.Where("room_code = ?", roomCode).First(&room).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
-			"error": "Room not found",
+			"error":   "Room not found",
 			"details": "The room you are trying to leave does not exist",
 		})
 	}
@@ -200,7 +200,7 @@ func LeaveRoom(c *fiber.Ctx) error {
 
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Invalid user ID",
+			"error":   "Invalid user ID",
 			"details": err.Error(),
 		})
 	}
@@ -209,33 +209,35 @@ func LeaveRoom(c *fiber.Ctx) error {
 		// If the user is the creator, delete the room
 		if err := db.Delete(&room).Error; err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error": "Failed to delete room",
+				"error":   "Failed to delete room",
 				"details": err.Error(),
 			})
 		}
+
+
 		return c.Status(fiber.StatusOK).JSON(fiber.Map{
-			"message": "Room deleted as host as left room",
+			"message": "Room deleted as host left room",
 		})
 	} else if room.OpponentID != nil && *room.OpponentID == userUUID {
 		room.OpponentID = nil // Remove the opponent from the room
 		room.RoomStatus = models.RoomStatusWaiting
+
+		if err := db.Save(&room).Error; err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error":   "Failed to leave room",
+				"details": err.Error(),
+			})
+		}
+		websockets.Hub.BroadcastPlayerList(roomCode)
+		return c.Status(fiber.StatusOK).JSON(fiber.Map{
+			"message": "Left room successfully",
+		})
 	} else {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
-			"error": "You are not part of this room",
+			"error":   "You are not part of this room",
 			"details": "You can only leave a room you are currently in",
 		})
 	}
-
-	if err := db.Save(&room).Error; err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to leave room",
-			"details": err.Error(),
-		})
-	}
-
-	return c.Status(fiber.StatusOK).JSON(fiber.Map{
-		"message": "Left room successfully",
-	})
 }
 
 func GetRoomDetails(c *fiber.Ctx) error {
@@ -245,7 +247,7 @@ func GetRoomDetails(c *fiber.Ctx) error {
 
 	if roomCode == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Room code is required",
+			"error":   "Room code is required",
 			"details": "Please provide a valid room code to get details",
 		})
 	}
@@ -254,16 +256,16 @@ func GetRoomDetails(c *fiber.Ctx) error {
 
 	if err := db.Where("room_code = ?", roomCode).First(&room).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
-			"error": "Room not found",
+			"error":   "Room not found",
 			"details": "The room you are trying to access does not exist",
 		})
 	}
 
 	room, err := LoadFullRoom(db, room.RoomCode)
-	
+
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to load room",
+			"error":   "Failed to load room",
 			"details": err.Error(),
 		})
 	}
@@ -273,6 +275,11 @@ func GetRoomDetails(c *fiber.Ctx) error {
 	})
 }
 
+
+
+// Manual fallback routes
+
+
 func GameOver(c *fiber.Ctx) error {
 	db := config.DB
 
@@ -280,11 +287,10 @@ func GameOver(c *fiber.Ctx) error {
 
 	if userId == "" {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-			"error": "Unauthorized",
+			"error":   "Unauthorized",
 			"details": "User ID is required to mark game as over",
 		})
 	}
-
 	// Get the room code from the URL parameters
 
 	roomCode := c.Params("roomCode")
@@ -292,19 +298,19 @@ func GameOver(c *fiber.Ctx) error {
 	// Get the winner ID and user stats from the request body
 
 	var body struct {
-		WinnerID string  `json:"winner_id"`
+		WinnerID string `json:"winner_id"`
 	}
 
 	if err := c.BodyParser(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Invalid request body",
+			"error":   "Invalid request body",
 			"details": err.Error(),
 		})
 	}
 
 	if roomCode == "" || body.WinnerID == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Room code and winner ID are required",
+			"error":   "Room code and winner ID are required",
 			"details": "Please provide both room code and winner ID to mark game as over",
 		})
 	}
@@ -315,7 +321,7 @@ func GameOver(c *fiber.Ctx) error {
 
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Invalid winner ID",
+			"error":   "Invalid winner ID",
 			"details": err.Error(),
 		})
 	}
@@ -326,7 +332,7 @@ func GameOver(c *fiber.Ctx) error {
 
 	if err := db.Where("room_code = ?", roomCode).First(&room).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
-			"error": "Room not found",
+			"error":   "Room not found",
 			"details": err.Error(),
 		})
 	}
@@ -338,7 +344,7 @@ func GameOver(c *fiber.Ctx) error {
 
 	if err := db.Save(&room).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to update room status",
+			"error":   "Failed to update room status",
 			"details": err.Error(),
 		})
 	}
@@ -346,10 +352,25 @@ func GameOver(c *fiber.Ctx) error {
 	room, err = LoadFullRoom(db, room.RoomCode)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to load room",
+			"error":   "Failed to load room",
 			"details": err.Error(),
 		})
 	}
+
+	// Prepare winner name
+	winnerName := ""
+	if room.WinnerID != nil {
+		if *room.WinnerID == room.CreatorID {
+			winnerName = room.Creator.Username
+		} else if room.OpponentID != nil && *room.WinnerID == *room.OpponentID {
+			winnerName = room.Opponent.Username
+		}
+	}
+
+	// Prepare empty stats map or fill with real player stats if you have it
+	stats := map[string]websockets.PlayerStats{}
+
+	websockets.BroadcastGameOver(room.RoomCode, winnerName, stats, "Game Finished")
 
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{
 		"message": "Game over, winner updated successfully",
@@ -364,7 +385,7 @@ func UpdateUserResult(c *fiber.Ctx) error {
 
 	if userId == "" {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-			"error": "Unauthorized",
+			"error":   "Unauthorized",
 			"details": "User ID is required to update user result",
 		})
 	}
@@ -373,31 +394,30 @@ func UpdateUserResult(c *fiber.Ctx) error {
 
 	if roomCode == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Room code is required",
+			"error":   "Room code is required",
 			"details": "Please provide a valid room code to update user result",
 		})
 	}
 
 	var body struct {
-		RoomID   string  `json:"room_id"`
-		WinnerID string  `json:"winner_id"`
+		WinnerID  string  `json:"winner_id"`
 		OpponentID string `json:"opponent_id"`
-		WPM      int     `json:"wpm"`
-		Accuracy float64 `json:"accuracy"`
-		Error    float64 `json:"error"`
+		WPM       int     `json:"wpm"`
+		Accuracy  float64 `json:"accuracy"`
+		Error     float64 `json:"error"`
 	}
 
 	if err := c.BodyParser(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Invalid request body",
+			"error":   "Invalid request body",
 			"details": err.Error(),
 		})
 	}
 
-	if roomCode == "" || body.WinnerID == "" {
+	if  body.WinnerID == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Room code and winner ID are required",
-			"details": "Please provide both room code and winner ID to update user result",
+			"error":   "Winner ID is required",
+			"details": "Please provide a winner ID to update user result",
 		})
 	}
 
@@ -405,7 +425,7 @@ func UpdateUserResult(c *fiber.Ctx) error {
 	userUUID, err := uuid.Parse(userId)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Invalid user ID",
+			"error":   "Invalid user ID",
 			"details": err.Error(),
 		})
 	}
@@ -414,7 +434,7 @@ func UpdateUserResult(c *fiber.Ctx) error {
 
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Invalid winner ID",
+			"error":   "Invalid winner ID",
 			"details": err.Error(),
 		})
 	}
@@ -423,16 +443,7 @@ func UpdateUserResult(c *fiber.Ctx) error {
 
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Invalid opponent ID",
-			"details": err.Error(),
-		})
-	}
-
-	roomUUID, err := uuid.Parse(body.RoomID)
-
-	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Invalid user ID or winner ID",
+			"error":   "Invalid opponent ID",
 			"details": err.Error(),
 		})
 	}
@@ -440,7 +451,6 @@ func UpdateUserResult(c *fiber.Ctx) error {
 	// Update the result for user
 
 	result := models.Results{
-		RoomID:     roomUUID,
 		UserID:     userUUID,
 		OpponentID: opponentUUID,
 		Won:        winnerUUID == userUUID,
@@ -451,18 +461,51 @@ func UpdateUserResult(c *fiber.Ctx) error {
 
 	if err := db.Create(&result).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to update user result",
+			"error":   "Failed to update user result",
 			"details": err.Error(),
 		})
 	}
 
 	db.Preload("Room").
-	Preload("User").
-	Preload("Opponent").
-	First(&result, "user_id = ? AND room_id = ?", userUUID, roomUUID)
+		Preload("User").
+		Preload("Opponent").
+		First(&result, "user_id = ?", userUUID)
+
 
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{
 		"message": "User result updated successfully",
 		"result":  result,
+	})
+}
+
+func DeleteRoom(c *fiber.Ctx) error {
+	roomCode := c.Params("roomCode")
+
+	if roomCode == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error":   "Room code is required",
+			"details": "Please provide a valid room code to delete the room",
+		})
+	}
+
+	// Find the room by code
+	var room models.Room
+	if err := config.DB.Where("room_code = ?", roomCode).First(&room).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"error":   "Room not found",
+			"details": err.Error(),
+		})
+	}
+
+	// Delete the room
+	if err := config.DB.Delete(&room).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error":   "Failed to delete room",
+			"details": err.Error(),
+		})
+	}
+
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{
+		"message": "Room deleted successfully",
 	})
 }

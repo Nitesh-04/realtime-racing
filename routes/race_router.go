@@ -12,4 +12,5 @@ func RaceRouter(api fiber.Router) {
 	api.Get("/race/:roomCode", controllers.GetRoomDetails)
 	api.Post("/race/over/:roomCode", controllers.GameOver)
 	api.Post("/race/updateResults/:roomCode", controllers.UpdateUserResult)
+	api.Delete("/race/:roomCode", controllers.DeleteRoom)
 }

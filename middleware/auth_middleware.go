@@ -28,6 +28,11 @@ func IsUnprotectedRoute(c *fiber.Ctx) bool {
 
 func CheckAuth() fiber.Handler {
 	return func (c *fiber.Ctx) error {
+
+		if c.Method() == fiber.MethodOptions {
+			return c.SendStatus(fiber.StatusNoContent)
+		}
+
 		if IsUnprotectedRoute(c) {
 			return c.Next()
 		}

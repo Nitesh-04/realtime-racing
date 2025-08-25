@@ -17,11 +17,7 @@ var DB *gorm.DB
 
 func ConnectDB() {
 
-	err := godotenv.Load()
-
-	if err != nil {
-		log.Fatalf("Error loading .env file")
-	}
+	_ = godotenv.Load()
 
 	dsn := os.Getenv("DATABASE_URL")
 

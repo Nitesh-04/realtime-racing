@@ -9,9 +9,6 @@ import (
 type Results struct {
 	ID uuid.UUID `gorm:"type:uuid;primaryKey;" json:"id"`
 
-	RoomID uuid.UUID `gorm:"type:uuid;not null" json:"room_id"`
-	Room Room `gorm:"foreignKey:RoomID;constraint:OnDelete:CASCADE"`
-
 	UserID uuid.UUID `gorm:"type:uuid;not null" json:"user_id"`
 	User User `gorm:"foreignKey:UserID;constraint:OnDelete:CASCADE"`
 

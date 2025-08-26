@@ -51,7 +51,6 @@ var Hub = &GameHub{
 	gameStates:  make(map[string]GameState),
 }
 
-// Safe write to WebSocket connection
 func (c *Connection) SafeWriteMessage(messageType int, data []byte) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()

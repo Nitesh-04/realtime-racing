@@ -2,6 +2,7 @@ package websockets
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -12,9 +13,10 @@ import (
 )
 
 type GameHub struct {
-	connections map[string][]Connection
+	connections map[string][]*Connection
 	stats       map[string]map[string]PlayerStats
 	timers      map[string]*time.Timer
+	gameStates  map[string]GameState
 	mu          sync.RWMutex
 }
 
@@ -22,6 +24,7 @@ type Connection struct {
 	Conn     *websocket.Conn
 	RoomCode string
 	Username string
+	writeMu  sync.Mutex // Add write mutex for each connection
 }
 
 type Message struct {
@@ -35,10 +38,24 @@ type PlayerStats struct {
 	Error   float64 `json:"errors"`
 }
 
+type GameState struct {
+	Stage        string    // "waiting", "countdown", "racing", "finished"
+	StartTime    time.Time
+	CountdownEnd time.Time
+}
+
 var Hub = &GameHub{
-	connections: make(map[string][]Connection),
+	connections: make(map[string][]*Connection),
 	stats:       make(map[string]map[string]PlayerStats),
 	timers:      make(map[string]*time.Timer),
+	gameStates:  make(map[string]GameState),
+}
+
+// Safe write to WebSocket connection
+func (c *Connection) SafeWriteMessage(messageType int, data []byte) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	return c.Conn.WriteMessage(messageType, data)
 }
 
 func (h *GameHub) HandleConnection(c *websocket.Conn) {
@@ -69,7 +86,8 @@ func (h *GameHub) HandleConnection(c *websocket.Conn) {
 
 	// Check if username is already connected to this room
 	h.mu.Lock()
-	for _, existingConn := range h.connections[roomCode] {
+	for i := range h.connections[roomCode] {
+		existingConn := h.connections[roomCode][i]
 		if existingConn.Username == username {
 			log.Printf("Username '%s' already connected to room '%s'", username, roomCode)
 			h.mu.Unlock()
@@ -80,9 +98,9 @@ func (h *GameHub) HandleConnection(c *websocket.Conn) {
 	}
 	h.mu.Unlock()
 
-	conn := Connection{Conn: c, RoomCode: room.RoomCode, Username: username}
+	conn := &Connection{Conn: c, RoomCode: room.RoomCode, Username: username}
 	
-	// Add connection and broadcast player list
+	// Add connection and handle game state
 	h.addConnection(conn)
 	
 	log.Printf("Player '%s' successfully connected to room '%s'", username, roomCode)
@@ -103,7 +121,6 @@ func (h *GameHub) HandleConnection(c *websocket.Conn) {
 	}
 }
 
-
 func (h *GameHub) BroadcastToRoom(roomCode, msgType string, payload interface{}) {
 	message := Message{Type: msgType, Payload: payload}
 	jsonMessage, err := json.Marshal(message)
@@ -112,10 +129,10 @@ func (h *GameHub) BroadcastToRoom(roomCode, msgType string, payload interface{})
 		return
 	}
 
-	log.Printf("Broadcasting to room %s: type='%s', payload=%v", roomCode, msgType, payload)
+	log.Printf("Broadcasting to room %s: type='%s'", roomCode, msgType)
 
 	h.mu.RLock()
-	connections := make([]Connection, len(h.connections[roomCode]))
+	connections := make([]*Connection, len(h.connections[roomCode]))
 	copy(connections, h.connections[roomCode])
 	h.mu.RUnlock()
 
@@ -124,17 +141,23 @@ func (h *GameHub) BroadcastToRoom(roomCode, msgType string, payload interface{})
 		return
 	}
 
+	// Use goroutines to send messages concurrently but safely
+	var wg sync.WaitGroup
 	for _, conn := range connections {
-		if err := conn.Conn.WriteMessage(websocket.TextMessage, jsonMessage); err != nil {
-			log.Printf("Error sending message to %s: %v", conn.Username, err)
-		} else {
-			log.Printf("Message sent successfully to %s", conn.Username)
-		}
+		wg.Add(1)
+		go func(c *Connection) {
+			defer wg.Done()
+			if err := c.SafeWriteMessage(websocket.TextMessage, jsonMessage); err != nil {
+				log.Printf("Error sending message to %s: %v", c.Username, err)
+			} else {
+				log.Printf("Message sent successfully to %s", c.Username)
+			}
+		}(conn)
 	}
+	wg.Wait()
 
 	log.Printf("Successfully sent message to %d players in room %s", len(connections), roomCode)
 }
-
 
 func BroadcastCountdown(roomCode string, seconds int) {
 	Hub.BroadcastToRoom(roomCode, "countdown", map[string]interface{}{
@@ -177,7 +200,7 @@ func (h *GameHub) BroadcastPlayerList(roomCode string) {
 	h.BroadcastToRoom(roomCode, "player_list", players)
 }
 
-func (h *GameHub) addConnection(conn Connection) {
+func (h *GameHub) addConnection(conn *Connection) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -187,33 +210,80 @@ func (h *GameHub) addConnection(conn Connection) {
 		h.stats[conn.RoomCode] = make(map[string]PlayerStats)
 	}
 
+	// Initialize game state if it doesn't exist
+	if _, exists := h.gameStates[conn.RoomCode]; !exists {
+		h.gameStates[conn.RoomCode] = GameState{Stage: "waiting"}
+	}
+
 	log.Printf("Added player '%s' to room '%s'. Total players: %d", 
 		conn.Username, conn.RoomCode, len(h.connections[conn.RoomCode]))
 
-	// Broadcast player list immediately (synchronously)
+	// Get current game state
+	gameState := h.gameStates[conn.RoomCode]
+	playerCount := len(h.connections[conn.RoomCode])
+
+	// Broadcast player list
 	var players []string
 	for _, c := range h.connections[conn.RoomCode] {
 		players = append(players, c.Username)
 	}
 
-	log.Printf("Broadcasting player list for room %s: %v", conn.RoomCode, players)
-	
-	// Release the lock before broadcasting to prevent deadlock
-	h.mu.Unlock()
-	h.BroadcastToRoom(conn.RoomCode, "player_list", players)
-	h.mu.Lock() // Re-acquire lock for defer
+	log.Printf("Current game state: %s, Player count: %d", gameState.Stage, playerCount)
 
-	// Start pre-game countdown when 2 players join
-	if len(h.connections[conn.RoomCode]) == 2 && h.timers[conn.RoomCode] == nil {
-		log.Printf("Starting pre-game countdown for room %s", conn.RoomCode)
-		// Release lock before starting pre-game to prevent deadlock
-		h.mu.Unlock()
-		h.startPreGame(conn.RoomCode)
-		h.mu.Lock() // Re-acquire lock for defer
+	// Release lock before async operations
+	h.mu.Unlock()
+	
+	// Always broadcast player list first
+	h.BroadcastToRoom(conn.RoomCode, "player_list", players)
+
+	h.mu.Lock() // Re-acquire for state checks
+
+	// Handle game state logic
+	switch gameState.Stage {
+	case "countdown":
+		// Game is in countdown - inform new player of remaining time
+		remaining := time.Until(gameState.CountdownEnd).Seconds()
+		if remaining > 0 {
+			log.Printf("Game in countdown, informing new player. Remaining: %.0f seconds", remaining)
+			go h.sendCountdownToPlayer(conn, int(remaining))
+		}
+	case "racing":
+		// Game already started - send start immediately to new player
+		log.Printf("Game already racing, sending start to new player")
+		go func() {
+			conn.SafeWriteMessage(websocket.TextMessage, []byte(`{"type":"start","payload":null}`))
+		}()
+	case "waiting":
+		// Only start countdown if we have exactly 2 players and no timer exists
+		if playerCount == 2 && h.timers[conn.RoomCode] == nil {
+			log.Printf("Starting pre-game countdown for room %s", conn.RoomCode)
+			// Update game state
+			countdownEnd := time.Now().Add(20 * time.Second)
+			h.gameStates[conn.RoomCode] = GameState{
+				Stage:        "countdown",
+				CountdownEnd: countdownEnd,
+			}
+			// Start countdown without holding the lock
+			h.mu.Unlock()
+			h.startPreGame(conn.RoomCode)
+			h.mu.Lock()
+		}
 	}
 }
 
-func (h *GameHub) removeConnection(conn Connection) {
+func (h *GameHub) sendCountdownToPlayer(conn *Connection, startingSeconds int) {
+	for i := startingSeconds; i > 0; i-- {
+		time.Sleep(1 * time.Second)
+		message := fmt.Sprintf(`{"type":"countdown","payload":{"seconds":%d}}`, i)
+		if err := conn.SafeWriteMessage(websocket.TextMessage, []byte(message)); err != nil {
+			return // Connection closed
+		}
+	}
+	// Send start message
+	conn.SafeWriteMessage(websocket.TextMessage, []byte(`{"type":"start","payload":null}`))
+}
+
+func (h *GameHub) removeConnection(conn *Connection) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -234,19 +304,21 @@ func (h *GameHub) removeConnection(conn Connection) {
 		players = append(players, c.Username)
 	}
 
-	log.Printf("Broadcasting updated player list for room %s: %v", conn.RoomCode, players)
-	
 	// Release lock before broadcasting
 	h.mu.Unlock()
 	h.BroadcastToRoom(conn.RoomCode, "player_list", players)
-	h.mu.Lock() // Re-acquire for other operations
+	h.mu.Lock()
 
-	// Stop timer if less than 2 players remain
+	// Stop timer and reset game state if less than 2 players remain
 	if len(h.connections[conn.RoomCode]) < 2 {
 		if t, ok := h.timers[conn.RoomCode]; ok {
 			t.Stop()
 			delete(h.timers, conn.RoomCode)
+			log.Printf("Stopped timer for room %s due to insufficient players", conn.RoomCode)
 		}
+		// Reset game state to waiting
+		h.gameStates[conn.RoomCode] = GameState{Stage: "waiting"}
+		log.Printf("Reset game state to waiting for room %s", conn.RoomCode)
 	}
 }
 
@@ -255,16 +327,23 @@ func (h *GameHub) startPreGame(roomCode string) {
 	
 	countdownDuration := 20
 	
-	// Send updates every second
+	// Create timer first
+	h.mu.Lock()
+	h.timers[roomCode] = time.NewTimer(time.Duration(countdownDuration) * time.Second)
+	timer := h.timers[roomCode]
+	h.mu.Unlock()
+
+	// Send countdown updates
 	go func() {
 		for i := countdownDuration; i > 0; i-- {
-			// Check if room still exists
+			// Check if room still exists and has enough players
 			h.mu.RLock()
-			_, exists := h.connections[roomCode]
+			connections, exists := h.connections[roomCode]
+			gameState := h.gameStates[roomCode]
 			h.mu.RUnlock()
 			
-			if !exists {
-				log.Printf("Room %s no longer exists, stopping countdown", roomCode)
+			if !exists || len(connections) < 2 || gameState.Stage != "countdown" {
+				log.Printf("Room %s countdown cancelled - not enough players or state changed", roomCode)
 				return
 			}
 			
@@ -272,29 +351,55 @@ func (h *GameHub) startPreGame(roomCode string) {
 			time.Sleep(1 * time.Second)
 		}
 		
-		// Countdown finished
+		// Countdown finished - transition to racing
+		h.mu.Lock()
+		if gameState, exists := h.gameStates[roomCode]; exists && gameState.Stage == "countdown" {
+			h.gameStates[roomCode] = GameState{
+				Stage:     "racing",
+				StartTime: time.Now(),
+			}
+			log.Printf("Transitioning room %s to racing state", roomCode)
+		}
+		h.mu.Unlock()
+		
 		log.Printf("Countdown finished, starting race for room %s", roomCode)
 		BroadcastStart(roomCode)
 		h.startRace(roomCode)
 	}()
-	
-	h.mu.Lock()
-	h.timers[roomCode] = time.AfterFunc(time.Duration(countdownDuration)*time.Second, func() {
-		// This is a backup in case the goroutine fails
-		log.Printf("Backup timer triggered for room %s", roomCode)
-	})
-	h.mu.Unlock()
+
+	// Wait for timer completion
+	go func() {
+		<-timer.C
+		log.Printf("Timer completed for room %s", roomCode)
+	}()
 }
 
 func (h *GameHub) startRace(roomCode string) {
+	h.mu.Lock()
+	// Replace the countdown timer with race timer
+	if oldTimer, exists := h.timers[roomCode]; exists {
+		oldTimer.Stop()
+	}
+	
 	h.timers[roomCode] = time.AfterFunc(15*time.Second, func() {
 		h.mu.Lock()
 		defer h.mu.Unlock()
+		
+		// Update game state to finished
+		if gameState, exists := h.gameStates[roomCode]; exists {
+			gameState.Stage = "finished"
+			h.gameStates[roomCode] = gameState
+		}
+		
+		log.Printf("Race finished for room %s, declaring winner", roomCode)
 		h.declareWinner(roomCode)
 	})
+	h.mu.Unlock()
+	
+	log.Printf("Race timer started for room %s (15 seconds)", roomCode)
 }
 
-func (h *GameHub) handleMessage(conn Connection, rawMsg []byte) {
+func (h *GameHub) handleMessage(conn *Connection, rawMsg []byte) {
 	var msg Message
 	if err := json.Unmarshal(rawMsg, &msg); err != nil {
 		log.Printf("Invalid message: %v", err)
@@ -373,14 +478,15 @@ func (h *GameHub) declareWinner(roomCode string) {
 
 	BroadcastGameOver(roomCode, winnerUsername, stats, "")
 
+	// Clean up timers
 	if t, ok := h.timers[roomCode]; ok {
 		t.Stop()
 		delete(h.timers, roomCode)
 	}
 
-	// Clean up room after short delay
+	// Clean up room after delay
 	go func() {
-		time.Sleep(5 * time.Second) // wait to ensure clients get final messages
+		time.Sleep(5 * time.Second)
 		var room models.Room
 		if err := config.DB.Where("room_code = ?", roomCode).First(&room).Error; err == nil {
 			config.DB.Delete(&room)
@@ -389,15 +495,16 @@ func (h *GameHub) declareWinner(roomCode string) {
 		h.mu.Lock()
 		delete(h.connections, roomCode)
 		delete(h.stats, roomCode)
+		delete(h.gameStates, roomCode)
 		if t, ok := h.timers[roomCode]; ok {
 			t.Stop()
 			delete(h.timers, roomCode)
 		}
 		h.mu.Unlock()
+
+		log.Printf("Cleaned up room %s", roomCode)
 	}()
-
 }
-
 
 func mapToStruct(input interface{}, output interface{}) error {
 	bytes, err := json.Marshal(input)
@@ -428,6 +535,7 @@ func (h *GameHub) PeriodicCleanup() {
 
 		delete(h.connections, roomCode)
 		delete(h.stats, roomCode)
+		delete(h.gameStates, roomCode)
 		if timer, exists := h.timers[roomCode]; exists {
 			timer.Stop()
 			delete(h.timers, roomCode)

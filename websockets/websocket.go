@@ -257,7 +257,7 @@ func (h *GameHub) addConnection(conn *Connection) {
 		if playerCount == 2 && h.timers[conn.RoomCode] == nil {
 			log.Printf("Starting pre-game countdown for room %s", conn.RoomCode)
 			// Update game state
-			countdownEnd := time.Now().Add(20 * time.Second)
+			countdownEnd := time.Now().Add(5 * time.Second)
 			h.gameStates[conn.RoomCode] = GameState{
 				Stage:        "countdown",
 				CountdownEnd: countdownEnd,
@@ -322,9 +322,9 @@ func (h *GameHub) removeConnection(conn *Connection) {
 }
 
 func (h *GameHub) startPreGame(roomCode string) {
-	log.Printf("Starting 20-second countdown for room %s", roomCode)
+	log.Printf("Starting 5-second countdown for room %s", roomCode)
 	
-	countdownDuration := 20
+	countdownDuration := 5
 	
 	// Create timer first
 	h.mu.Lock()
@@ -422,6 +422,9 @@ func (h *GameHub) handleMessage(conn *Connection, rawMsg []byte) {
 }
 
 func (h *GameHub) declareWinner(roomCode string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
 	stats := h.stats[roomCode]
 	var winnerUsername string
 	var bestStats PlayerStats
@@ -475,7 +478,7 @@ func (h *GameHub) declareWinner(roomCode string) {
 		}
 	}
 
-	BroadcastGameOver(roomCode, winnerUsername, stats, "")
+	BroadcastGameOver(roomCode, winnerUsername, stats, "winner_declared")
 
 	// Clean up timers
 	if t, ok := h.timers[roomCode]; ok {
